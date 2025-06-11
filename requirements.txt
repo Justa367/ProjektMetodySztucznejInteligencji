@@ -1,5 +1,15 @@
-﻿numpy==1.23.5
+numpy==1.23.5
+
 pandas==1.5.0
+
 scikit-learn>=1.0.0
+
 pytest>=6.0.0
+
 jupyter>=1.0.0
+
+imbalanced-learn==0.10.1
+
+matplotlib==3.6.0
+
+seaborn==0.12.0
