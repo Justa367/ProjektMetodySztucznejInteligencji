@@ -1,48 +1,22 @@
-import sklearn.datasets as skdatasets 
-from sklearn.metrics import precision_score 
-from imblearn.over_sampling import ADASYN, SMOTE, RandomOverSampler
-import matplotlib.pyplot as plt 
+
+import sklearn.datasets as skdatasets # type: ignore
+from sklearn.metrics import precision_score # type: ignore
+from imblearn.over_sampling import ADASYN, SMOTE, RandomOverSampler # type: ignore
+import matplotlib.pyplot as plt # type: ignore
 import seaborn as sns # type: ignore
-import pandas as pd
-from sklearn.model_selection import RepeatedKFold 
-import sklearn as sk  
+import pandas as pd # type: ignore
+from sklearn.model_selection import RepeatedKFold # type: ignore
+import sklearn as sk  # type: ignore
 import numpy as np 
-from sklearn.metrics import f1_score 
-from sklearn.metrics import recall_score 
-from sklearn.metrics import balanced_accuracy_score 
-from sklearn.neighbors import KNeighborsClassifier 
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.impute import SimpleImputer
+from sklearn.metrics import f1_score # type: ignore
+from sklearn.metrics import recall_score # type: ignore
+from sklearn.metrics import balanced_accuracy_score # type: ignore
+from sklearn.neighbors import KNeighborsClassifier # type: ignore
+from sklearn.preprocessing import StandardScaler # type: ignore
+from sklearn.impute import SimpleImputer # type: ignore
+from sklearn.neighbors import NearestNeighbors
 
-# Dataset: load_breast_cancer
-# Typ problemu: klasyfikacja binarna
-# Liczba klas: 2 (malignant, benign)
-# Liczba cech: 30 (numeryczne)
-# Niezbalansowanie: umiarkowane – benign: 357 (62.7%), malignant: 212 (37.3%)
 
-# Dataset: fetch_covtype
-# Typ problemu: klasyfikacja wieloklasowa
-# Liczba klas: 7 (typ pokrycia terenu)
-# Liczba cech: 54 (10 numerycznych + 44 binarne)
-# Niezbalansowanie: silne – klasa 2: ~49%, inne klasy znacząco mniejsze (<10%)
-
-# Dataset: fetch_kddcup99
-# Typ problemu: klasyfikacja wieloklasowa (anomalie w ruchu sieciowym)
-# Liczba klas: >20 (normal + różne typy ataków)
-# Liczba cech: 41 (numeryczne i kategoryczne)
-# Niezbalansowanie: bardzo silne – np. neptune + normal dominują (~80%)
-
-# Dataset: fetch_openml(name='credit-g')
-# Typ problemu: klasyfikacja binarna (zdolność kredytowa)
-# Liczba klas: 2 (good, bad)
-# Liczba cech: 20 (numeryczne i kategoryczne)
-# Niezbalansowanie: silne – good: 700 (70%), bad: 300 (30%)
-
-# Dataset: fetch_openml(name='PhishingWebsites')
-# Typ problemu: klasyfikacja binarna (phishing vs. legalne strony)
-# Liczba klas: 2 (1 = phishing, -1 = legal)
-# Liczba cech: 30 (wszystkie binarne: -1, 0, 1)
-# Niezbalansowanie: umiarkowane – phishing lekko dominuje (~55–60%)
 
 # Funkcje do ładowania dodatkowych danych
 def load_creditcard_data():
@@ -112,6 +86,74 @@ class ResamplingClassifier:
     def predict(self, X):
         return self.base_classifier.predict(X)
 
+
+class SimpleADASYN:
+    def __init__(self, sampling_strategy=1.0, n_neighbors=5, random_state=None):
+        self.sampling_strategy = sampling_strategy
+        self.n_neighbors = n_neighbors
+        self.random_state = np.random.RandomState(random_state)
+
+    def fit_resample(self, X, y):
+        # Start: Zbiór treningowy
+        X = np.asarray(X)
+        y = np.asarray(y)
+
+        # Wybierz próbki klasy mniejszościowej
+        classes, counts = np.unique(y, return_counts=True)
+        if len(classes) != 2:
+            raise ValueError("Obsługiwane są tylko dwa typy klas.")
+        maj_class = classes[np.argmax(counts)]
+        min_class = classes[np.argmin(counts)]
+
+        X_min = X[y == min_class]
+        X_maj = X[y == maj_class]
+
+        n_min = len(X_min)
+        n_maj = len(X_maj)
+        n_generate = int((n_maj - n_min) * self.sampling_strategy)
+        if n_generate <= 0:
+            return X, y
+
+        # Znajdź k-najbliższych sąsiadów dla każdej próbki klasy mniejszościowej
+        nn = NearestNeighbors(n_neighbors=self.n_neighbors + 1)
+        nn.fit(X)
+        neighbors = nn.kneighbors(X_min, return_distance=False)[:, 1:]
+
+        # Oblicz stopień trudności klasyfikacji
+        difficulties = []
+        for idxs in neighbors:
+            neighbor_labels = y[idxs]
+            difficulty = np.sum(neighbor_labels == maj_class) / self.n_neighbors
+            difficulties.append(difficulty)
+        difficulties = np.array(difficulties)
+
+        # Normalizuj trudność → rozkład r′
+        r_prime = difficulties / difficulties.sum()
+
+        # Wyznacz liczbę próbek do wygenerowania g_i
+        g_i = np.round(r_prime * n_generate).astype(int)
+
+        # Interpoluj próbki (generuj nowe punkty)
+        synthetic_samples = []
+        for i, num in enumerate(g_i):
+            for _ in range(num):
+                neighbor_idx = self.random_state.choice(neighbors[i])
+                diff = X[neighbor_idx] - X_min[i]
+                gap = self.random_state.rand()
+                new_sample = X_min[i] + gap * diff
+                synthetic_samples.append(new_sample)
+
+        # Połącz dane oryginalne i wygenerowane
+        if synthetic_samples:
+            X_syn = np.vstack(synthetic_samples)
+            y_syn = np.full(X_syn.shape[0], min_class)
+            X_resampled = np.vstack((X, X_syn))
+            y_resampled = np.hstack((y, y_syn))
+        else:
+            X_resampled, y_resampled = X, y
+
+        return X_resampled, y_resampled
+
 # Załaduj wszystkie zestawy danych
 classifications = {
     "9:1": skdatasets.make_classification(weights=[0.9, 0.1], n_samples=10000),
@@ -133,7 +175,9 @@ samplers = {
     "KNeighbors No Oversampling": ResamplingClassifier(base_classifier=KNeighborsClassifier(n_neighbors=5), base_preprocessing=None),
     "KNeighbors Random Oversampling": ResamplingClassifier(base_classifier=KNeighborsClassifier(n_neighbors=5), base_preprocessing=RandomOverSampler(random_state=42)),
     "KNeighbors SMOTE": ResamplingClassifier(base_classifier=KNeighborsClassifier(n_neighbors=5), base_preprocessing=SMOTE(random_state=42)),
-    "KNeighbors ADASYN": ResamplingClassifier(base_classifier=KNeighborsClassifier(n_neighbors=5), base_preprocessing=ADASYN(random_state=42))
+    "KNeighbors ADASYN": ResamplingClassifier(base_classifier=KNeighborsClassifier(n_neighbors=5), base_preprocessing=ADASYN(random_state=42)),
+    "Naive bayes SimpleADASYN": ResamplingClassifier(base_classifier=sk.naive_bayes.GaussianNB(), base_preprocessing=SimpleADASYN(random_state=42)),
+    "KNeighbors SimpleADASYN": ResamplingClassifier(base_classifier=KNeighborsClassifier(n_neighbors=5), base_preprocessing=SimpleADASYN(random_state=42))
 }
 
 # Inicjalizacja wyników
@@ -236,22 +280,26 @@ std_metrics = [
 for metric, title, filename in std_metrics:
     plot_results(metric, title, filename)
 
-# Wykresy porównawcze dla każdego zbioru danych
+# Wykresy porównawcze dla każdego zbioru danych (SLUPKOWE)
 for dataset in df['Klasyfikacja'].unique():
     dataset_df = df[df['Klasyfikacja'] == dataset]
-    
-    plt.figure(figsize=(10, 6))
     metrics_to_plot = ['F1 mean', 'Precision mean', 'Recall mean', 'Balanced accuracy mean']
-    for metric in metrics_to_plot:
-        plt.plot(dataset_df['Metoda'], dataset_df[metric], label=metric)
     
-    plt.title(f"Metrics comparison for {dataset}")
-    plt.xlabel("Method")
-    plt.ylabel("Score")
+    melted_df = dataset_df.melt(id_vars='Metoda', value_vars=metrics_to_plot,
+                                var_name='Metryka', value_name='Wartość')
+    
+    plt.figure(figsize=(14, 6))
+    sns.barplot(data=melted_df, x='Metoda', y='Wartość', hue='Metryka', errorbar=None)
+    
+    plt.title(f"Porównanie metryk dla zbioru: {dataset}")
+    plt.xlabel("Metoda")
+    plt.ylabel("Średnia wartość metryki")
     plt.xticks(rotation=45, ha='right')
-    plt.legend()
+    plt.legend(title='Metryka', bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.tight_layout()
-    plt.savefig(f"comparison_{dataset}.png")
+    plt.savefig(f"barplot_comparison_{dataset}.png")
     plt.close()
+
+
 
 print("\nVisualizations saved to PNG files.")
